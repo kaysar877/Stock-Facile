@@ -181,3 +181,66 @@ fichier `.db`.
 
 ---
 
+## Partie 02 — Packages et classes modèles
+
+### Q2.3 — Pourquoi `id` est-il un `int?`, et pourquoi `toMap()` n'écrit `id` que s'il n'est pas null ?
+
+**Pourquoi `int?` (nullable) ?**
+
+Parce qu'un objet `Categorie` peut exister en dehors de la base : celui que
+l'on construit dans le formulaire avant de l'enregistrer. Tant qu'il n'est pas
+enregistré, il n'a pas d'identifiant — il n'a pas de « numéro de ligne ». Le
+modèle doit donc pouvoir représenter les deux situations :
+
+- une catégorie **nouvelle** → `id == null` ;
+- une catégorie ** déjà enregistrée** → `id == 5`.
+
+Le typage le rend explicite : impossible d'écrire du code qui suppose qu'un id
+existe alors qu'il n'est pas encore attribué.
+
+**Pourquoi n'écrire `id` que s'il n'est pas null ?**
+
+Parce que `toMap()` sert à deux moments très différents :
+
+- lors d'un **INSERT**, on ne connaît pas encore l'id : c'est SQLite qui
+  l'attribue (`AUTOINCREMENT`). Si on écrivait `'id': null` dans la Map,
+  SQLite essaierait d'insérer un NULL dans une colonne `INTEGER PRIMARY KEY`,
+  ce qui est interdit (et l'auto-incrémentation ne se déclencherait pas) ;
+- lors d'un **UPDATE**, on a besoin de l'id pour construire le `WHERE id = ?`.
+
+La ligne `if (id != null) 'id': id` règle le problème une fois pour toutes :
+la clé n'apparaît dans la Map que si elle a une valeur à donner.
+
+### Question de réflexion — `factory` et conversions de types
+
+**Pourquoi un constructeur `factory` plutôt qu'un constructeur classique ?**
+
+Un constructeur classique (génératif) a une seule mission : **créer un nouvel
+objet**. À chaque appel, on obtient une instance neuve.
+
+Un constructeur `factory` peut faire autre chose : il peut **renvoyer un objet
+existant** au lieu d'en fabriquer un nouveau. C'est exactement ce dont on a
+besoin dans deux cas :
+
+- `Categorie.fromMap(map)` : le nom dit déjà tout — on construit une
+  catégorie *à partir d'une ligne*. On pourrait l'écrire avec un constructeur
+  classique, mais `fromMap` est plus lisible à l'appel
+  (`Categorie.fromMap(ligne)` contre `Categorie(ligne.id, ligne.nom, ...)`),
+  et surtout la signature devient impossible à confondre avec le constructeur
+  normal ;
+- `DatabaseHelper()` : la factory renvoie toujours la même instance (le
+  singleton, voir la réponse à la Q3.2).
+
+**Pourquoi `(map['prix'] as num).toDouble()` plutôt que `map['prix'] as double` ?**
+
+Parce que SQLite est à **typage dynamique** : une colonne `REAL` peut très
+bien contenir la valeur `5` (stockée sans décimale), et SQLite renverra alors
+un `int` à Dart, pas un `double`. Avec `as double`, le programme planterait sur
+une erreur de cast alors que la donnée est parfaitement correcte.
+
+En passant par `num` puis `toDouble()`, on accepte les deux cas : un `double`
+reste un `double`, un `int` devient `1.0` proprement. Le même piège existe
+pour les colonnes `INTEGER` et pour les dates.
+
+---
+
