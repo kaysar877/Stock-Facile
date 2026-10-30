@@ -244,3 +244,107 @@ pour les colonnes `INTEGER` et pour les dates.
 
 ---
 
+## Partie 03 — Ouvrir et créer la base depuis Flutter
+
+### Q3.2 — Les quatre questions sur `DatabaseHelper`
+
+**(1) Que se passe-t-il si on écrit deux fois `DatabaseHelper()` dans le code ? Combien d'objets sont créés ?**
+
+Il ne se crée **aucun objet supplémentaire** : les deux appels renvoient
+exactement le même objet, la même instance.
+
+```dart
+DatabaseHelper() == DatabaseHelper()  // => true
+identical(DatabaseHelper(), DatabaseHelper())  // => true
+```
+
+Le mécanisme est le constructeur `factory` (commentaire 1) : au lieu de
+créer un objet, il renvoie `_instance`, une instance unique créée au
+chargement de la classe. Un constructeur génératif aurait créé deux objets
+différents, et donc deux connexions potentiellement différentes à la même
+base — c'est exactement le piège du « singleton mal fait ».
+
+Un objet `DatabaseHelper` pour toute l'application, ça veut dire :
+
+- une seule connexion SQLite ouverte (donc un seul verrou sur le fichier) ;
+- une seule base, donc pas de risque de divergence entre deux « vues » des
+  données ;
+- un seul endroit qui connaît le chemin du fichier et la version du schéma.
+
+C'est le motif **singleton** : on garantit qu'une ressource coûteuse ou
+dangereuse à dupliquer (fichier, connexion, cache) n'existe qu'en un seul
+exemplaire. Le mot-clé `factory` est ce qui rend le singleton possible en
+Dart, parce qu'un constructeur classique ne peut pas refuser de créer un
+objet.
+
+**(2) Que fait l'opérateur `??=` ?**
+
+`??=` est l'**affectation si nulle** (null-aware assignment). C'est le
+raccourci pour « si la variable vaut `null`, on lui donne la valeur de
+l'expression de droite ; sinon on ne touche à rien ».
+
+```dart
+// ces deux lignes font la même chose
+_db ??= await _ouvrirBase();
+if (_db == null) _db = await _ouvrirBase();
+```
+
+Appliqué ici (commentaire 2), il rend l'ouverture **paresseuse** (lazy) :
+
+- au premier appel à `DatabaseHelper().database`, `_db` vaut `null` : la base
+  est ouverte, puis le résultat est mémorisé ;
+- à tous les appels suivants, `_db` n'est plus `null` : la ligne ne fait
+  rien, et la connexion existante est réutilisée.
+
+Sans `??=`, il faudrait écrire la condition à chaque fois, et surtout on
+risquerait d'ouvrir la base deux fois si deux écrans demandaient la connexion
+en même temps.
+
+**(3) Pourquoi le `PRAGMA foreign_keys = ON` est-il dans `onConfigure` et pas dans `onCreate` ?**
+
+Parce que l'activation des clés étrangères est un **réglage de la connexion**,
+pas une propriété du fichier. `PRAGMA foreign_keys` ne s'enregistre pas dans la
+base : il vaut 0 (désactivé) à chaque nouvelle connexion, et il faut le
+reactiver à chaque ouverture. La preuve : si on ouvre la même base avec DB
+Browser puis avec l'application, chacune a sa propre connexion et son propre
+réglage.
+
+Donc :
+
+- `onCreate` n'est appelé qu'**une fois**, quand le fichier `.db` n'existe
+  encore. Y mettre le PRAGMA reviendrait à n'activer les clés étrangères que
+  sur la toute première ouverture. À la deuxième exécution de l'application,
+  le fichier existe déjà, `onCreate` n'est pas appelé, et les contraintes
+  `FOREIGN KEY` et `ON DELETE RESTRICT` seraient **silencieusement ignorées** ;
+- `onConfigure` est appelé à **chaque ouverture**, avant `onCreate` et avant
+  `onUpgrade`. Le PRAGMA est donc toujours appliqué, et les tables sont même
+  créées avec les clés étrangères déjà actives.
+
+Autrement dit : `onCreate` sert à créer le contenu, `onConfigure` sert à
+configurer la connexion. C'est la bonne place pour tout ce qui doit être vrai
+à chaque fois, `PRAGMA foreign_keys = ON` en premier.
+
+**(4) Combien de fois `onCreate` est-il appelé dans toute la vie de l'application ?**
+
+**Une fois**, la première fois que l'application tourne sur un poste donné.
+
+`onCreate` n'est appelé que si le fichier `.db` n'existe pas encore. Au
+premier lancement, sqflite crée le fichier et appelle `onCreate`, qui crée
+les tables et insère les 4 catégories de départ. Ensuite, à chaque
+relancement, le fichier existe déjà : sqflite compare la version du fichier
+avec `versionBase` et n'appelle plus `onCreate`.
+
+C'est exactement ce que montre la question suivante (Q3.5) : au second
+lancement, le message « onCreate : création des tables » ne s'affiche plus.
+
+Le schéma évolue alors par un autre chemin :
+
+- si la version du code est **supérieure** à celle du fichier → `onUpgrade`
+  est appelé (partie 10, ajout de la colonne `seuil_alerte`) ;
+- `onCreate` ne reviendrait que si le fichier disparaissait : désinstallation
+  de l'application, suppression du `.db`, ou « Réinitialiser la base » de la
+  partie 11.
+
+C'est pour ça que `onCreate` et `onUpgrade` doivent être maintenus en
+parallèle : `onCreate` sert les nouvelles installations, `onUpgrade` sert les
+installations existantes.
